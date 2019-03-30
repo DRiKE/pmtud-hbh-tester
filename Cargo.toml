@@ -11,6 +11,14 @@ serde = "1.0"
 serde_derive = "1.0"
 pcap = "0.7"
 byteorder = "1"
+log = "0.4"
+simplelog = "0.5"
+
+#interfaces = "0.4"
+
+#pnetlink = "0.0.3"
+pnetlink = { git = "https://github.com/polachok/pnetlink" } 
 
 [dependencies.pnet]
 version = "0.22.0"
+
