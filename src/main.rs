@@ -11,6 +11,7 @@ extern crate simplelog;
 
 use pnetlink::packet::netlink::NetlinkConnection;
 //use pnetlink::packet::route::route::{Route, RoutesIterator};
+use pnetlink::packet::route::addr::{Addr, Scope};
 use pnetlink::packet::route::link::{Link, Links};
 use pnetlink::packet::route::neighbour::{NeighbourFlags, NeighbourState, Neighbours};
 
@@ -24,7 +25,7 @@ use pnet::packet::MutablePacket;
 use pnet::packet::PacketSize;
 use structopt::StructOpt;
 
-use std::net::Ipv6Addr;
+use std::net::{IpAddr, Ipv6Addr};
 
 use simplelog::{Config, LevelFilter, TermLogger};
 
@@ -39,9 +40,18 @@ struct Opt {
     /// outgoing/listening interface
     #[structopt(short = "i", long = "interface")]
     interface: String,
-    /// Destination MAC
+    /// Next-hop MAC
     #[structopt(long = "dmac", parse(try_from_str))]
-    dmac: MacAddr,
+    dmac: Option<MacAddr>,
+    /// IPv6 source address
+    #[structopt(long = "saddr", parse(try_from_str))]
+    saddr: Option<Ipv6Addr>,
+    /// IPv6 destination address
+    #[structopt(long = "daddr", parse(try_from_str))]
+    daddr: Ipv6Addr,
+    /// MTU to send out
+    #[structopt(long = "mtu1")]
+    mtu1: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -52,6 +62,9 @@ struct HBH {
     mtu2: u16,
 }
 
+// TODO make the hardcoded [17, 0] nicer, maybe generalize to 'EH' or something
+// TODO impl more functions, set_mtu1, set_mtu2, toggle_R_flag
+// TODO impl set_next_header
 impl HBH {
     /*
     fn serialize<'p>(&'p self) -> &'p [u8] {
@@ -119,6 +132,24 @@ fn get_link_info(oif: String) -> Link {
     link
 }
 
+fn get_address_info(link: &Link) -> Option<Ipv6Addr> {
+    let mut conn = NetlinkConnection::new();
+    if let Some(IpAddr::V6(addr)) = Addr::iter_addrs(&mut conn)
+        .filter(|addr| {
+            addr.get_link_index() == link.get_index()
+                && std::mem::discriminant(&addr.get_scope())
+                    == std::mem::discriminant(&Scope::Universe)
+                && addr.get_family() == 10 // FIXME no constant for this in pnetlink?
+        }).next()
+        .map_or(None, |addr| addr.get_ip())
+    {
+        Some(addr)
+    } else {
+        None
+    }
+    //.or_else(None); //collect::<Vec<_>>();
+}
+
 fn get_neighbour_info(link: &Link) -> MacAddr {
     let mut conn = NetlinkConnection::new();
     let neighbours = conn
@@ -136,15 +167,28 @@ fn get_neighbour_info(link: &Link) -> MacAddr {
     next_hop.get_ll_addr().unwrap()
 }
 
-fn fill_routing_info(oif: &str) -> () {
+struct RoutingInfo {
+    saddr: Option<Ipv6Addr>,
+    smac: MacAddr,
+    next_hop: MacAddr,
+    mtu1: u32,
+}
+fn get_routing_info(oif: &str) -> RoutingInfo {
     let link = get_link_info(oif.to_string());
     let next_hop = get_neighbour_info(&link);
     let mtu1 = link.get_mtu().unwrap();
     let smac = link.get_hw_addr().unwrap();
+    let saddr = get_address_info(&link);
     info!(
-        "using mtu {:?} and smac {:?}, next hop {:?}",
-        mtu1, smac, next_hop
+        "netlink: mtu {:?} and smac {:?}, next hop {:?}, saddr {:?}",
+        mtu1, smac, next_hop, saddr,
     );
+    RoutingInfo {
+        saddr,
+        smac,
+        next_hop,
+        mtu1,
+    }
     // FIXME getting next_hop etc based on the v6 dst address
     // is not yet possible because pnetlink does not support it (March 30 2019)
     //
@@ -155,6 +199,34 @@ fn fill_routing_info(oif: &str) -> () {
     // For now, fill info based on passed outgoing interface
 }
 
+fn override_routing_info(routing_info: &mut RoutingInfo, opt: &Opt) -> () {
+    if let Some(dmac) = opt.dmac {
+        warn!(
+            "using passed dmac {} instead of {}",
+            dmac, routing_info.next_hop
+        );
+        routing_info.next_hop = dmac;
+    }
+    if let Some(mtu1) = opt.mtu1 {
+        warn!(
+            "using passed mtu1 {} instead of {}",
+            mtu1, routing_info.mtu1
+        );
+        routing_info.mtu1 = mtu1;
+    }
+    if let Some(passed_saddr) = opt.saddr {
+        if let Some(netlink_saddr) = Some(routing_info.saddr) {
+            warn!(
+                "using passed saddr {} instead of {}",
+                passed_saddr,
+                netlink_saddr.unwrap()
+            );
+            routing_info.saddr = Some(passed_saddr);
+        }
+    }
+}
+
+//TODO split up main better
 fn main() {
     let opt = Opt::from_args();
 
@@ -169,11 +241,12 @@ fn main() {
     //TODO better error handling on non-existing interface names
     //think where we should check this (probably with NetLink)
     //perhaps fill_routing_info could return a Option<my_info_struct>
-    let interface_name = opt.interface;
-    fill_routing_info(&interface_name);
-    let interface_names_match = |iface: &NetworkInterface| iface.name == interface_name;
+    let interface_name = &opt.interface;
+    let mut routing_info = get_routing_info(&interface_name);
+    override_routing_info(&mut routing_info, &opt);
 
     // Find the network interface with the provided name
+    let interface_names_match = |iface: &NetworkInterface| iface.name == *interface_name;
     let interfaces = datalink::interfaces();
     let interface = interfaces
         .into_iter()
@@ -181,13 +254,17 @@ fn main() {
         .next()
         .unwrap();
 
-    //TODO get source address from link interface, and dst from opt
-    //TODO implement overriding of defaults, e.g. dmac is derived from --interface but can be
-    //passed as --dmac (which then has preference)
-    //same for mtu
-    let mut frame = base_packet("1::1".parse().unwrap(), "2::1".parse().unwrap(), 0x1234);
-    frame.set_source(interface.mac_address());
-    frame.set_destination(opt.dmac);
+    //TODO v6 source address from interface?
+    //also allow it to be passed, just for convenience
+
+    //TODO unwrap should be replaced with decent error message 'no saddr found'
+    let mut frame = base_packet(
+        routing_info.saddr.unwrap(),
+        opt.daddr,
+        routing_info.mtu1 as u16,
+    );
+    frame.set_source(routing_info.smac);
+    frame.set_destination(routing_info.next_hop);
 
     let (mut tx, mut _rx) = match datalink::channel(&interface, Default::default()) {
         Ok(Ethernet(tx, rx)) => (tx, rx),
