@@ -133,6 +133,7 @@ fn base_packet(saddr: Ipv6Addr, daddr: Ipv6Addr, mtu1: u16) -> MutableEthernetPa
     ipv6.set_version(6);
     ipv6.set_source(saddr);
     ipv6.set_destination(daddr);
+    ipv6.set_hop_limit(64);
     ipv6.set_next_header(IpNextHeaderProtocols::Hopopt);
 
     ipv6.set_payload_length(8 + udp.get_length()); // HBH is 8 bytes
