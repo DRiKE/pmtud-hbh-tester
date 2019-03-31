@@ -79,6 +79,23 @@ impl HBH {
         &buffer.as_slice()
     }
     */
+    fn new() -> HBH {
+        HBH {
+            opt_type: 0b00111110,
+            opt_length: 0b100,
+            mtu1: 0,
+            mtu2: 0,
+        }
+    }
+    fn set_r_flag(&mut self) {
+        self.mtu2 = self.mtu2 | 1 << 15;
+    }
+    fn unset_r_flag(&mut self) {
+        self.mtu2 = self.mtu2 & 0x7fff;
+    }
+
+    //TODO (?) fn set_mtu2, to safeguard the R flag
+
     fn serialize(&self) -> [u8; 8] {
         [
             17,
@@ -94,19 +111,18 @@ impl HBH {
 }
 
 fn base_packet(saddr: Ipv6Addr, daddr: Ipv6Addr, mtu1: u16) -> MutableEthernetPacket<'static> {
-    // create UDP dataframe
+    //TODO create valid UDP dataframe so tshark etc don't throw warnings
+
     let mut ipv6 = MutableIpv6Packet::owned(vec![0u8; 1000]).unwrap();
     ipv6.set_version(6);
     ipv6.set_source(saddr);
     ipv6.set_destination(daddr);
     ipv6.set_next_header(IpNextHeaderProtocols::Hopopt);
 
-    let hbh = HBH {
-        opt_type: 0b00111110,
-        opt_length: 0b100,
-        mtu1: mtu1,
-        mtu2: 0,
-    };
+    let mut hbh = HBH::new();
+    hbh.mtu1 = mtu1;
+    hbh.set_r_flag();
+
     //println!("len: {}", serialize(&hbh).unwrap().len());
     ipv6.set_payload_length(8);
     ipv6.set_payload(&hbh.serialize());
