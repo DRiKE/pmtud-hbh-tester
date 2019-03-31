@@ -191,9 +191,12 @@ fn get_neighbour_info(link: &Link) -> MacAddr {
     let next_hop = neighbours
         .iter()
         .find(|&neighbour| {
-            neighbour.get_state() == NeighbourState::REACHABLE
+            neighbour.get_state() == NeighbourState::REACHABLE | NeighbourState::STALE
                 && neighbour.get_flags().contains(NeighbourFlags::ROUTER)
-        }).unwrap();
+        }).unwrap(); // TODO if the router is STALE, this borks
+                     // also, using 'lo' interface breaks as well
+                     // need to do something like in get_address_info, or
+                     // wait for https://doc.rust-lang.org/std/result/enum.Result.html#method.map_or_else
     next_hop.get_ll_addr().unwrap()
 }
 
@@ -245,11 +248,10 @@ fn override_routing_info(routing_info: &mut RoutingInfo, opt: &Opt) {
         routing_info.mtu1 = mtu1;
     }
     if let Some(passed_saddr) = opt.saddr {
-        if let Some(netlink_saddr) = Some(routing_info.saddr) {
+        if let Some(netlink_saddr) = routing_info.saddr {
             warn!(
                 "using passed saddr {} instead of {}",
-                passed_saddr,
-                netlink_saddr.unwrap()
+                passed_saddr, netlink_saddr
             );
             routing_info.saddr = Some(passed_saddr);
         }
