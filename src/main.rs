@@ -15,7 +15,7 @@ use pnetlink::packet::route::addr::{Addr, Scope};
 use pnetlink::packet::route::link::{Link, Links};
 use pnetlink::packet::route::neighbour::{NeighbourFlags, NeighbourState, Neighbours};
 
-use byteorder::{ByteOrder, LittleEndian, NetworkEndian, WriteBytesExt};
+//use byteorder::{ByteOrder, LittleEndian, NetworkEndian, WriteBytesExt};
 use pnet::datalink::Channel::Ethernet;
 use pnet::datalink::{self, MacAddr, NetworkInterface};
 use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket};
@@ -81,17 +81,17 @@ impl HBH {
     */
     fn new() -> HBH {
         HBH {
-            opt_type: 0b00111110,
+            opt_type: 0b0011_1110,
             opt_length: 0b100,
             mtu1: 0,
             mtu2: 0,
         }
     }
     fn set_r_flag(&mut self) {
-        self.mtu2 = self.mtu2 | 1 << 15;
+        self.mtu2 |= 1 << 15;
     }
     fn unset_r_flag(&mut self) {
-        self.mtu2 = self.mtu2 & 0x7fff;
+        self.mtu2 &= 0x7fff;
     }
 
     //TODO (?) fn set_mtu2, to safeguard the R flag
@@ -131,7 +131,8 @@ fn base_packet(saddr: Ipv6Addr, daddr: Ipv6Addr, mtu1: u16) -> MutableEthernetPa
         0;
         MutableEthernetPacket::minimum_packet_size()
             + ipv6.packet_size()
-    ]).unwrap();
+    ])
+    .unwrap();
     packet.set_ethertype(EtherTypes::Ipv6);
     packet.set_payload(ipv6.packet_mut());
     packet
@@ -151,13 +152,13 @@ fn get_link_info(oif: String) -> Link {
 fn get_address_info(link: &Link) -> Option<Ipv6Addr> {
     let mut conn = NetlinkConnection::new();
     if let Some(IpAddr::V6(addr)) = Addr::iter_addrs(&mut conn)
-        .filter(|addr| {
+        .find(|addr| {
             addr.get_link_index() == link.get_index()
                 && std::mem::discriminant(&addr.get_scope())
                     == std::mem::discriminant(&Scope::Universe)
                 && addr.get_family() == 10 // FIXME no constant for this in pnetlink?
-        }).next()
-        .map_or(None, |addr| addr.get_ip())
+        })
+        .and_then(|addr| addr.get_ip())
     {
         Some(addr)
     } else {
@@ -175,10 +176,10 @@ fn get_neighbour_info(link: &Link) -> MacAddr {
 
     let next_hop = neighbours
         .iter()
-        .filter(|&neighbour| {
+        .find(|&neighbour| {
             neighbour.get_state() == NeighbourState::REACHABLE
                 && neighbour.get_flags().contains(NeighbourFlags::ROUTER)
-        }).next()
+        })
         .unwrap();
     next_hop.get_ll_addr().unwrap()
 }
@@ -215,7 +216,7 @@ fn get_routing_info(oif: &str) -> RoutingInfo {
     // For now, fill info based on passed outgoing interface
 }
 
-fn override_routing_info(routing_info: &mut RoutingInfo, opt: &Opt) -> () {
+fn override_routing_info(routing_info: &mut RoutingInfo, opt: &Opt) {
     if let Some(dmac) = opt.dmac {
         warn!(
             "using passed dmac {} instead of {}",
