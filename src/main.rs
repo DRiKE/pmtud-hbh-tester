@@ -21,8 +21,8 @@ use pnet::datalink::{self, MacAddr, NetworkInterface};
 use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv6::MutableIpv6Packet;
-use pnet::packet::MutablePacket;
-use pnet::packet::PacketSize;
+use pnet::packet::udp::{ipv6_checksum, MutableUdpPacket, Udp};
+use pnet::packet::{MutablePacket, PacketSize};
 use structopt::StructOpt;
 
 use std::net::{IpAddr, Ipv6Addr};
@@ -110,29 +110,43 @@ impl HBH {
     }
 }
 
+// TODO implement TCP or ICMP as well?
 fn base_packet(saddr: Ipv6Addr, daddr: Ipv6Addr, mtu1: u16) -> MutableEthernetPacket<'static> {
-    //TODO create valid UDP dataframe so tshark etc don't throw warnings
-
-    let mut ipv6 = MutableIpv6Packet::owned(vec![0u8; 1000]).unwrap();
-    ipv6.set_version(6);
-    ipv6.set_source(saddr);
-    ipv6.set_destination(daddr);
-    ipv6.set_next_header(IpNextHeaderProtocols::Hopopt);
+    let mut udp: MutableUdpPacket = MutableUdpPacket::owned(vec![0u8; 10]).unwrap();
+    udp.populate(
+        &(Udp {
+            source: 12345,
+            destination: 53,
+            length: 2 + 8,
+            checksum: 0,
+            payload: vec![0xBE, 0xEF],
+        }),
+    );
+    let checksum = ipv6_checksum(&udp.to_immutable(), &saddr, &daddr);
+    udp.set_checksum(checksum);
 
     let mut hbh = HBH::new();
     hbh.mtu1 = mtu1;
     hbh.set_r_flag();
 
-    //println!("len: {}", serialize(&hbh).unwrap().len());
-    ipv6.set_payload_length(8);
-    ipv6.set_payload(&hbh.serialize());
+    let mut ipv6 = MutableIpv6Packet::owned(vec![0u8; 100]).unwrap(); // FIXME make this 100 dynamic
+    ipv6.set_version(6);
+    ipv6.set_source(saddr);
+    ipv6.set_destination(daddr);
+    ipv6.set_next_header(IpNextHeaderProtocols::Hopopt);
+
+    ipv6.set_payload_length(8 + udp.get_length()); // HBH is 8 bytes
+    debug!(
+        "payload: {:?}",
+        &[&hbh.serialize()[..], &udp.packet_mut()].concat()
+    );
+    ipv6.set_payload(&[&hbh.serialize()[..], &udp.packet_mut()].concat());
 
     let mut packet = MutableEthernetPacket::owned(vec![
         0;
         MutableEthernetPacket::minimum_packet_size()
             + ipv6.packet_size()
-    ])
-    .unwrap();
+    ]).unwrap();
     packet.set_ethertype(EtherTypes::Ipv6);
     packet.set_payload(ipv6.packet_mut());
     packet
@@ -157,8 +171,7 @@ fn get_address_info(link: &Link) -> Option<Ipv6Addr> {
                 && std::mem::discriminant(&addr.get_scope())
                     == std::mem::discriminant(&Scope::Universe)
                 && addr.get_family() == 10 // FIXME no constant for this in pnetlink?
-        })
-        .and_then(|addr| addr.get_ip())
+        }).and_then(|addr| addr.get_ip())
     {
         Some(addr)
     } else {
@@ -179,8 +192,7 @@ fn get_neighbour_info(link: &Link) -> MacAddr {
         .find(|&neighbour| {
             neighbour.get_state() == NeighbourState::REACHABLE
                 && neighbour.get_flags().contains(NeighbourFlags::ROUTER)
-        })
-        .unwrap();
+        }).unwrap();
     next_hop.get_ll_addr().unwrap()
 }
 
@@ -210,7 +222,7 @@ fn get_routing_info(oif: &str) -> RoutingInfo {
     // is not yet possible because pnetlink does not support it (March 30 2019)
     //
     //for route in Route::iter_routes(&mut conn) {
-    //    println!("{:?}", route);
+    //    info!("{:?}", route);
     //}
 
     // For now, fill info based on passed outgoing interface
@@ -244,6 +256,7 @@ fn override_routing_info(routing_info: &mut RoutingInfo, opt: &Opt) {
 }
 
 //TODO split up main better
+//TODO implement listener
 fn main() {
     let opt = Opt::from_args();
 
@@ -270,9 +283,6 @@ fn main() {
         .filter(interface_names_match)
         .next()
         .unwrap();
-
-    //TODO v6 source address from interface?
-    //also allow it to be passed, just for convenience
 
     //TODO unwrap should be replaced with decent error message 'no saddr found'
     let mut frame = base_packet(
