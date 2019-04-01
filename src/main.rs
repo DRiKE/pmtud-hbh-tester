@@ -181,23 +181,25 @@ fn get_address_info(link: &Link) -> Option<Ipv6Addr> {
     //.or_else(None); //collect::<Vec<_>>();
 }
 
-fn get_neighbour_info(link: &Link) -> MacAddr {
+fn get_neighbour_info(link: &Link) -> Option<MacAddr> {
     let mut conn = NetlinkConnection::new();
     let neighbours = conn
         .iter_neighbours(Some(link))
         .unwrap()
         .collect::<Vec<_>>();
 
-    let next_hop = neighbours
-        .iter()
-        .find(|&neighbour| {
-            neighbour.get_state() == NeighbourState::REACHABLE | NeighbourState::STALE
-                && neighbour.get_flags().contains(NeighbourFlags::ROUTER)
-        }).unwrap(); // TODO if the router is STALE, this borks
-                     // also, using 'lo' interface breaks as well
-                     // need to do something like in get_address_info, or
-                     // wait for https://doc.rust-lang.org/std/result/enum.Result.html#method.map_or_else
-    next_hop.get_ll_addr().unwrap()
+    if let Some(next_hop) = neighbours.iter().find(|&neighbour| {
+        (neighbour.get_state() == NeighbourState::REACHABLE
+            || neighbour.get_state() == NeighbourState::STALE)
+            && neighbour.get_flags().contains(NeighbourFlags::ROUTER)
+    }) {
+        // FIXME can we make this nicer using
+        // https://doc.rust-lang.org/std/result/enum.Result.html#method.map_or_else
+        // ??
+        next_hop.get_ll_addr()
+    } else {
+        None
+    }
 }
 
 struct RoutingInfo {
@@ -208,7 +210,7 @@ struct RoutingInfo {
 }
 fn get_routing_info(oif: &str) -> RoutingInfo {
     let link = get_link_info(oif.to_string());
-    let next_hop = get_neighbour_info(&link);
+    let next_hop = get_neighbour_info(&link).expect("no next-hop found");
     let mtu1 = link.get_mtu().unwrap();
     let smac = link.get_hw_addr().unwrap();
     let saddr = get_address_info(&link);
