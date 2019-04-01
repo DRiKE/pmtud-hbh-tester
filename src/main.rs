@@ -280,14 +280,21 @@ fn main() {
     let mut routing_info = get_routing_info(&interface_name);
     override_routing_info(&mut routing_info, &opt);
 
+    //sanity check
+    if routing_info.saddr.is_none() {
+        error!("no saddr!");
+        panic!("no saddr panic");
+    } else {
+        info!("using {}", routing_info.saddr.unwrap());
+    }
+
     // Find the network interface with the provided name
     let interface_names_match = |iface: &NetworkInterface| iface.name == *interface_name;
     let interfaces = datalink::interfaces();
     let interface = interfaces
         .into_iter()
-        .filter(interface_names_match)
-        .next()
-        .unwrap();
+        .find(interface_names_match)
+        .expect("no interface with that name");
 
     //TODO unwrap should be replaced with decent error message 'no saddr found'
     let mut frame = base_packet(
