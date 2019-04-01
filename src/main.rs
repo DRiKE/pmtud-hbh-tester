@@ -111,7 +111,7 @@ impl HBH {
 }
 
 // TODO implement TCP or ICMP as well?
-fn base_packet(saddr: Ipv6Addr, daddr: Ipv6Addr, mtu1: u16) -> MutableEthernetPacket<'static> {
+fn base_packet<'a>(saddr: Ipv6Addr, daddr: Ipv6Addr, mtu1: u16) -> MutableEthernetPacket<'a> {
     let mut udp: MutableUdpPacket = MutableUdpPacket::owned(vec![0u8; 10]).unwrap();
     udp.populate(
         &(Udp {
@@ -129,7 +129,7 @@ fn base_packet(saddr: Ipv6Addr, daddr: Ipv6Addr, mtu1: u16) -> MutableEthernetPa
     hbh.mtu1 = mtu1;
     hbh.set_r_flag();
 
-    let mut ipv6 = MutableIpv6Packet::owned(vec![0u8; 100]).unwrap(); // FIXME make this 100 dynamic
+    let mut ipv6 = MutableIpv6Packet::owned(vec![0u8; 58]).unwrap(); // FIXME make this 58 dynamic
     ipv6.set_version(6);
     ipv6.set_source(saddr);
     ipv6.set_destination(daddr);
