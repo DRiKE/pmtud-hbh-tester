@@ -29,6 +29,8 @@ use std::net::{IpAddr, Ipv6Addr};
 
 use simplelog::{Config, LevelFilter, TermLogger};
 
+const HBH_SIZE: usize = 8;
+
 #[derive(Debug, StructOpt)]
 struct Opt {
     /// Verbose/logging
@@ -112,14 +114,20 @@ impl HBH {
 
 // TODO implement TCP or ICMP as well?
 fn base_packet<'a>(saddr: Ipv6Addr, daddr: Ipv6Addr, mtu1: u16) -> MutableEthernetPacket<'a> {
-    let mut udp: MutableUdpPacket = MutableUdpPacket::owned(vec![0u8; 10]).unwrap();
+    let udp_payload = vec![0xBE, 0xEF];
+    let mut udp: MutableUdpPacket = MutableUdpPacket::owned(vec![
+        0u8;
+        MutableUdpPacket::minimum_packet_size()
+            + udp_payload.len()
+    ])
+    .unwrap();
     udp.populate(
         &(Udp {
             source: 12345,
             destination: 53,
-            length: 2 + 8,
+            length: (MutableUdpPacket::minimum_packet_size() + udp_payload.len()) as u16, // header, + payload of 2
             checksum: 0,
-            payload: vec![0xBE, 0xEF],
+            payload: udp_payload,
         }),
     );
     let checksum = ipv6_checksum(&udp.to_immutable(), &saddr, &daddr);
@@ -129,25 +137,26 @@ fn base_packet<'a>(saddr: Ipv6Addr, daddr: Ipv6Addr, mtu1: u16) -> MutableEthern
     hbh.mtu1 = mtu1;
     hbh.set_r_flag();
 
-    let mut ipv6 = MutableIpv6Packet::owned(vec![0u8; 58]).unwrap(); // FIXME make this 58 dynamic
+    // apparently the libpnet udp.packet_size() does not correctly return the size of the entire
+    // header+payload, use .packet_mut().len() as a workaround.
+    let ipv6_size = MutableIpv6Packet::minimum_packet_size() + HBH_SIZE + &udp.packet_mut().len();
+    debug!("{} {}", ipv6_size, &udp.packet_mut().len()); //FIXME why is udp 8 and not 10?
+    let mut ipv6 = MutableIpv6Packet::owned(vec![0u8; ipv6_size]).unwrap(); // FIXME make this 58 dynamic
     ipv6.set_version(6);
     ipv6.set_source(saddr);
     ipv6.set_destination(daddr);
     ipv6.set_hop_limit(64);
     ipv6.set_next_header(IpNextHeaderProtocols::Hopopt);
 
-    ipv6.set_payload_length(8 + udp.get_length()); // HBH is 8 bytes
-    debug!(
-        "payload: {:?}",
-        &[&hbh.serialize()[..], &udp.packet_mut()].concat()
-    );
+    ipv6.set_payload_length((HBH_SIZE + &udp.packet_mut().len()) as u16); // HBH is 8 bytes
     ipv6.set_payload(&[&hbh.serialize()[..], &udp.packet_mut()].concat());
 
     let mut packet = MutableEthernetPacket::owned(vec![
         0;
         MutableEthernetPacket::minimum_packet_size()
             + ipv6.packet_size()
-    ]).unwrap();
+    ])
+    .unwrap();
     packet.set_ethertype(EtherTypes::Ipv6);
     packet.set_payload(ipv6.packet_mut());
     packet
@@ -172,7 +181,8 @@ fn get_address_info(link: &Link) -> Option<Ipv6Addr> {
                 && std::mem::discriminant(&addr.get_scope())
                     == std::mem::discriminant(&Scope::Universe)
                 && addr.get_family() == 10 // FIXME no constant for this in pnetlink?
-        }).and_then(|addr| addr.get_ip())
+        })
+        .and_then(|addr| addr.get_ip())
     {
         Some(addr)
     } else {
