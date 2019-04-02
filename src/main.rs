@@ -140,8 +140,8 @@ fn base_packet<'a>(saddr: Ipv6Addr, daddr: Ipv6Addr, mtu1: u16) -> MutableEthern
     // apparently the libpnet udp.packet_size() does not correctly return the size of the entire
     // header+payload, use .packet_mut().len() as a workaround.
     let ipv6_size = MutableIpv6Packet::minimum_packet_size() + HBH_SIZE + &udp.packet_mut().len();
-    debug!("{} {}", ipv6_size, &udp.packet_mut().len()); //FIXME why is udp 8 and not 10?
-    let mut ipv6 = MutableIpv6Packet::owned(vec![0u8; ipv6_size]).unwrap(); // FIXME make this 58 dynamic
+    debug!("{} {}", ipv6_size, &udp.packet_mut().len());
+    let mut ipv6 = MutableIpv6Packet::owned(vec![0u8; ipv6_size]).unwrap();
     ipv6.set_version(6);
     ipv6.set_source(saddr);
     ipv6.set_destination(daddr);
@@ -188,7 +188,6 @@ fn get_address_info(link: &Link) -> Option<Ipv6Addr> {
     } else {
         None
     }
-    //.or_else(None); //collect::<Vec<_>>();
 }
 
 fn get_neighbour_info(link: &Link) -> Option<MacAddr> {
