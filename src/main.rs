@@ -18,7 +18,7 @@ use pnetlink::packet::route::neighbour::{NeighbourFlags, NeighbourState, Neighbo
 //use byteorder::{ByteOrder, LittleEndian, NetworkEndian, WriteBytesExt};
 use pnet::datalink::Channel::Ethernet;
 use pnet::datalink::{self, MacAddr, NetworkInterface};
-use pnet::packet::ethernet::{EtherTypes, MutableEthernetPacket};
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv6::MutableIpv6Packet;
 use pnet::packet::udp::{ipv6_checksum, MutableUdpPacket, Udp};
@@ -275,22 +275,8 @@ fn override_routing_info(routing_info: &mut RoutingInfo, opt: &Opt) {
     }
 }
 
-//TODO split up main better
-//TODO implement listener
-fn main() {
-    let opt = Opt::from_args();
-
-    match opt.verbose {
-        0 => TermLogger::init(LevelFilter::Warn, Config::default()).unwrap(),
-        1 => TermLogger::init(LevelFilter::Info, Config::default()).unwrap(),
-        2 | _ => TermLogger::init(LevelFilter::Debug, Config::default()).unwrap(),
-    };
-
-    info!("Passed options: {:?}", opt);
-
-    //TODO better error handling on non-existing interface names
-    //think where we should check this (probably with NetLink)
-    //perhaps fill_routing_info could return a Option<my_info_struct>
+fn send_probe(opt: &Opt) {
+    debug!("in send_probe");
     let interface_name = &opt.interface;
     let mut routing_info = get_routing_info(&interface_name);
     override_routing_info(&mut routing_info, &opt);
@@ -330,4 +316,57 @@ fn main() {
     };
 
     tx.send_to(frame.packet_mut(), None);
+}
+
+//TODO check for eth/v6/hbh -> our type
+//TODO DRY the interface stuff from here and send_probe
+//TODO loop indefinitly and catch SIGINT or something
+fn listen(opt: &Opt) {
+    // Find the network interface with the provided name
+    let interface_name = &opt.interface;
+    let interface_names_match = |iface: &NetworkInterface| iface.name == *interface_name;
+    let interfaces = datalink::interfaces();
+    let interface = interfaces
+        .into_iter()
+        .find(interface_names_match)
+        .expect("no interface with that name");
+    let (mut _tx, mut rx) = match datalink::channel(&interface, Default::default()) {
+        Ok(Ethernet(tx, rx)) => (tx, rx),
+        Ok(_) => panic!("Unhandled channel type"),
+        Err(e) => panic!(
+            "An error occurred when creating the datalink channel: {}",
+            e
+        ),
+    };
+
+    for _ in 0..10 {
+        match rx.next() {
+            Ok(packet) => {
+                let packet = EthernetPacket::new(packet).unwrap();
+                debug!("{:?}", packet);
+            }
+            Err(e) => {
+                // If an error occurs, we can handle it here
+                panic!("An error occurred while reading: {}", e);
+            }
+        }
+    }
+}
+
+fn main() {
+    let opt = Opt::from_args();
+
+    match opt.verbose {
+        0 => TermLogger::init(LevelFilter::Warn, Config::default()).unwrap(),
+        1 => TermLogger::init(LevelFilter::Info, Config::default()).unwrap(),
+        2 | _ => TermLogger::init(LevelFilter::Debug, Config::default()).unwrap(),
+    };
+
+    info!("Passed options: {:?}", opt);
+
+    if opt.listen {
+        listen(&opt);
+    } else {
+        send_probe(&opt);
+    }
 }
