@@ -366,8 +366,8 @@ fn is_hbh_probe(eth: &EthernetPacket) -> bool {
     if eth.get_ethertype() == EtherTypes::Ipv6 {
         let ipv6: Ipv6Packet = Ipv6Packet::new(eth.payload()).unwrap();
         if ipv6.get_next_header() == IpNextHeaderProtocols::Hopopt {
-            let hopopt = &ipv6.payload()[0..7];
-            debug!("{:?}", hopopt);
+            let hopopt = &ipv6.payload()[0..HBH_SIZE - 1];
+            debug!("hopopt bytes (hex): {:x?}", hopopt);
             return true;
         }
     }
