@@ -20,9 +20,9 @@ use pnet::datalink::Channel::Ethernet;
 use pnet::datalink::{self, MacAddr, NetworkInterface};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv6::MutableIpv6Packet;
+use pnet::packet::ipv6::{Ipv6Packet, MutableIpv6Packet};
 use pnet::packet::udp::{ipv6_checksum, MutableUdpPacket, Udp};
-use pnet::packet::{MutablePacket, PacketSize};
+use pnet::packet::{MutablePacket, Packet, PacketSize};
 use structopt::StructOpt;
 
 use std::net::{IpAddr, Ipv6Addr};
@@ -265,13 +265,19 @@ fn override_routing_info(routing_info: &mut RoutingInfo, opt: &Opt) {
         routing_info.mtu1 = mtu1;
     }
     if let Some(passed_saddr) = opt.saddr {
+        debug!("we have passed_saddr {}", passed_saddr);
         if let Some(netlink_saddr) = routing_info.saddr {
             warn!(
                 "using passed saddr {} instead of {}",
                 passed_saddr, netlink_saddr
             );
-            routing_info.saddr = Some(passed_saddr);
+        } else {
+            warn!(
+                "using passed saddr {}, could not detect a valid saddr anyway",
+                passed_saddr
+            );
         }
+        routing_info.saddr = Some(passed_saddr);
     }
 }
 
@@ -318,7 +324,7 @@ fn send_probe(opt: &Opt) {
     tx.send_to(frame.packet_mut(), None);
 }
 
-//TODO check for eth/v6/hbh -> our type
+//TODO check for our specific HBH type
 //TODO DRY the interface stuff from here and send_probe
 //TODO loop indefinitly and catch SIGINT or something
 fn listen(opt: &Opt) {
@@ -339,11 +345,14 @@ fn listen(opt: &Opt) {
         ),
     };
 
-    for _ in 0..10 {
+    loop {
         match rx.next() {
             Ok(packet) => {
                 let packet = EthernetPacket::new(packet).unwrap();
-                debug!("{:?}", packet);
+                if is_hbh_probe(&packet) {
+                    info!("got a probe!");
+                }
+                //debug!("{:?}", packet);
             }
             Err(e) => {
                 // If an error occurs, we can handle it here
@@ -351,6 +360,18 @@ fn listen(opt: &Opt) {
             }
         }
     }
+}
+
+fn is_hbh_probe(eth: &EthernetPacket) -> bool {
+    if eth.get_ethertype() == EtherTypes::Ipv6 {
+        let ipv6: Ipv6Packet = Ipv6Packet::new(eth.payload()).unwrap();
+        if ipv6.get_next_header() == IpNextHeaderProtocols::Hopopt {
+            let hopopt = &ipv6.payload()[0..7];
+            debug!("{:?}", hopopt);
+            return true;
+        }
+    }
+    false
 }
 
 fn main() {
