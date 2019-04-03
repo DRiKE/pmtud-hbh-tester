@@ -36,21 +36,27 @@ struct Opt {
     /// Verbose/logging
     #[structopt(short = "v", parse(from_occurrences))]
     verbose: u64,
+
     /// listening mode
-    #[structopt(short = "l", long = "listen")]
-    listen: Option<bool>,
+    #[structopt(short = "l", long = "listen", name = "listen", requires = "interface")]
+    listen: bool,
+
     /// outgoing/listening interface
     #[structopt(short = "i", long = "interface")]
     interface: String,
+
     /// Next-hop MAC
     #[structopt(long = "dmac", parse(try_from_str))]
     dmac: Option<MacAddr>,
+
     /// IPv6 source address
     #[structopt(long = "saddr", parse(try_from_str))]
     saddr: Option<Ipv6Addr>,
+
     /// IPv6 destination address
-    #[structopt(long = "daddr", parse(try_from_str))]
-    daddr: Ipv6Addr,
+    #[structopt(long = "daddr", parse(try_from_str), required_unless = "listen")]
+    daddr: Option<Ipv6Addr>,
+
     /// MTU to send out
     #[structopt(long = "mtu1")]
     mtu1: Option<u32>,
@@ -308,7 +314,7 @@ fn main() {
     //TODO unwrap should be replaced with decent error message 'no saddr found'
     let mut frame = base_packet(
         routing_info.saddr.unwrap(),
-        opt.daddr,
+        opt.daddr.unwrap(),
         routing_info.mtu1 as u16,
     );
     frame.set_source(routing_info.smac);
