@@ -64,6 +64,8 @@ struct Opt {
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct HBH {
+    next_header: u8,
+    eh_length: u8,
     opt_type: u8,
     opt_length: u8,
     mtu1: u16,
@@ -74,40 +76,48 @@ struct HBH {
 // TODO impl more functions, set_mtu1, set_mtu2, toggle_R_flag
 // TODO impl set_next_header
 impl HBH {
-    /*
-    fn serialize<'p>(&'p self) -> &'p [u8] {
-        //let mut buffer = [0u8; 6];
-        let mut buffer = vec![];
-
-        WriteBytesExt::write_u8(&mut buffer, self.opt_type);
-        LittleEndian::write_u16(&mut buffer, self.mtu1);
-        LittleEndian::write_u16(&mut buffer, self.mtu2);
-
-        buffer.write_u16::<NetworkEndian>(1234).unwrap();
-        &buffer.as_slice()
-    }
-    */
     fn new() -> HBH {
         HBH {
+            next_header: 17,
+            eh_length: 0,
             opt_type: 0b0011_1110,
             opt_length: 0b100,
             mtu1: 0,
-            mtu2: 0,
+            mtu2: 0, // contains R flag TODO MSB or LSB?
         }
     }
-    fn set_r_flag(&mut self) {
+
+    //MSB is the R flag
+    fn _set_r_flag(&mut self) {
         self.mtu2 |= 1 << 15;
     }
-    fn unset_r_flag(&mut self) {
+    fn _unset_r_flag(&mut self) {
         self.mtu2 &= 0x7fff;
     }
+    // ---
 
-    //TODO (?) fn set_mtu2, to safeguard the R flag
+    //LSB is the R flag
+    fn set_r_flag(&mut self) {
+        self.mtu2 |= 0b0000_0001;
+    }
+    fn unset_r_flag(&mut self) {
+        self.mtu2 &= 0b1111_1110;
+    }
+    fn get_r_flag(&self) -> u16 {
+        self.mtu2 & 0x0001
+    }
+
+    fn get_mtu2(&self) -> u16 {
+        self.mtu2 & 0xfffe
+    }
+    fn set_mtu2(&mut self, new_mtu2: u16) {
+        self.mtu2 = (new_mtu2 / 2) << 1 | self.get_r_flag();
+    }
 
     fn serialize(&self) -> [u8; 8] {
         [
-            17,
-            0,
+            self.next_header,
+            self.eh_length,
             self.opt_type,
             self.opt_length,
             (self.mtu1 >> 8) as u8,
@@ -116,10 +126,37 @@ impl HBH {
             (self.mtu2 & 0xff) as u8,
         ]
     }
+
+    fn from(buf: &[u8]) -> HBH {
+        HBH {
+            next_header: buf[0],
+            eh_length: buf[1],
+            opt_type: buf[2],
+            opt_length: buf[3],
+            mtu1: (buf[4] as u16) << 8 | buf[5] as u16,
+            mtu2: (buf[6] as u16) << 8 | buf[7] as u16,
+        }
+    }
+}
+impl std::fmt::Display for HBH {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_fmt(format_args!(
+            "mtu1: {}, mtu2: {}, flag: {}",
+            self.mtu1,
+            self.get_mtu2(),
+            self.get_r_flag()
+        ))
+    }
 }
 
 // TODO implement TCP or ICMP as well?
-fn base_packet<'a>(saddr: Ipv6Addr, daddr: Ipv6Addr, mtu1: u16) -> MutableEthernetPacket<'a> {
+fn base_packet<'a>(
+    saddr: Ipv6Addr,
+    daddr: Ipv6Addr,
+    mtu1: u16,
+    r_flag: bool,
+    mtu2: u16,
+) -> MutableEthernetPacket<'a> {
     let udp_payload = vec![0xBE, 0xEF];
     let mut udp: MutableUdpPacket = MutableUdpPacket::owned(vec![
         0u8;
@@ -141,7 +178,10 @@ fn base_packet<'a>(saddr: Ipv6Addr, daddr: Ipv6Addr, mtu1: u16) -> MutableEthern
 
     let mut hbh = HBH::new();
     hbh.mtu1 = mtu1;
-    hbh.set_r_flag();
+    if r_flag {
+        hbh.set_r_flag();
+    }
+    hbh.set_mtu2(mtu2);
 
     // apparently the libpnet udp.packet_size() does not correctly return the size of the entire
     // header+payload, use .packet_mut().len() as a workaround.
@@ -281,7 +321,9 @@ fn override_routing_info(routing_info: &mut RoutingInfo, opt: &Opt) {
     }
 }
 
-fn send_probe(opt: &Opt) {
+//TODO refactor to not take Opt, but all the individual saddr/daddr so we can use it to send the
+//response from listen()
+fn send_probe(opt: &Opt, daddr: Ipv6Addr, r_flag: bool, mtu2: u16) {
     debug!("in send_probe");
     let interface_name = &opt.interface;
     let mut routing_info = get_routing_info(&interface_name);
@@ -306,8 +348,10 @@ fn send_probe(opt: &Opt) {
     //TODO unwrap should be replaced with decent error message 'no saddr found'
     let mut frame = base_packet(
         routing_info.saddr.unwrap(),
-        opt.daddr.unwrap(),
+        daddr,
         routing_info.mtu1 as u16,
+        r_flag,
+        mtu2,
     );
     frame.set_source(routing_info.smac);
     frame.set_destination(routing_info.next_hop);
@@ -349,8 +393,21 @@ fn listen(opt: &Opt) {
         match rx.next() {
             Ok(packet) => {
                 let packet = EthernetPacket::new(packet).unwrap();
-                if is_hbh_probe(&packet) {
-                    info!("got a probe!");
+                if let Some(probe) = is_hbh_probe(&packet) {
+                    info!("got a probe! {}", probe);
+                    if probe.get_r_flag() == 1 {
+                        let r_flag = probe.get_mtu2() == 0;
+                        info!(
+                            "flag is set, sending a response with mtu2 of {}, r_flag {} ",
+                            probe.mtu1, r_flag
+                        );
+                        send_probe(
+                            &opt,
+                            Ipv6Packet::new(packet.payload()).unwrap().get_source(),
+                            r_flag,
+                            probe.mtu1, // the received mtu1 will be reflected as mtu2 via this parameter
+                        );
+                    }
                 }
                 //debug!("{:?}", packet);
             }
@@ -362,16 +419,16 @@ fn listen(opt: &Opt) {
     }
 }
 
-fn is_hbh_probe(eth: &EthernetPacket) -> bool {
+fn is_hbh_probe(eth: &EthernetPacket) -> Option<HBH> {
     if eth.get_ethertype() == EtherTypes::Ipv6 {
         let ipv6: Ipv6Packet = Ipv6Packet::new(eth.payload()).unwrap();
         if ipv6.get_next_header() == IpNextHeaderProtocols::Hopopt {
-            let hopopt = &ipv6.payload()[0..HBH_SIZE - 1];
-            debug!("hopopt bytes (hex): {:x?}", hopopt);
-            return true;
+            let hopopt = &ipv6.payload()[0..=HBH_SIZE - 1];
+            //debug!("hopopt bytes (hex): {:x?}", hopopt);
+            return Some(HBH::from(hopopt));
         }
     }
-    false
+    None
 }
 
 fn main() {
@@ -383,11 +440,18 @@ fn main() {
         2 | _ => TermLogger::init(LevelFilter::Debug, Config::default()).unwrap(),
     };
 
+    //TODO add warning if an mtu1 > 65535 is passed
     info!("Passed options: {:?}", opt);
 
     if opt.listen {
         listen(&opt);
     } else {
-        send_probe(&opt);
+        send_probe(
+            &opt,
+            opt.daddr
+                .expect("not in listening mode, should have a --daddr passed"),
+            true, // we want the R-flag set
+            0,    //mtu2
+        );
     }
 }
