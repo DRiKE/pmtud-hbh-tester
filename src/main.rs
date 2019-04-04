@@ -419,6 +419,7 @@ fn listen(opt: &Opt) {
     }
 }
 
+// TODO filter on our specific type
 fn is_hbh_probe(eth: &EthernetPacket) -> Option<HBH> {
     if eth.get_ethertype() == EtherTypes::Ipv6 {
         let ipv6: Ipv6Packet = Ipv6Packet::new(eth.payload()).unwrap();
