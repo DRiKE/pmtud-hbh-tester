@@ -186,7 +186,6 @@ fn base_packet<'a>(
     // apparently the libpnet udp.packet_size() does not correctly return the size of the entire
     // header+payload, use .packet_mut().len() as a workaround.
     let ipv6_size = MutableIpv6Packet::minimum_packet_size() + HBH_SIZE + &udp.packet_mut().len();
-    debug!("{} {}", ipv6_size, &udp.packet_mut().len());
     let mut ipv6 = MutableIpv6Packet::owned(vec![0u8; ipv6_size]).unwrap();
     ipv6.set_version(6);
     ipv6.set_source(saddr);
@@ -324,7 +323,6 @@ fn override_routing_info(routing_info: &mut RoutingInfo, opt: &Opt) {
 //TODO refactor to not take Opt, but all the individual saddr/daddr so we can use it to send the
 //response from listen()
 fn send_probe(opt: &Opt, daddr: Ipv6Addr, r_flag: bool, mtu2: u16) {
-    debug!("in send_probe");
     let interface_name = &opt.interface;
     let mut routing_info = get_routing_info(&interface_name);
     override_routing_info(&mut routing_info, &opt);
@@ -393,23 +391,24 @@ fn listen(opt: &Opt) {
         match rx.next() {
             Ok(packet) => {
                 let packet = EthernetPacket::new(packet).unwrap();
-                if let Some(probe) = is_hbh_probe(&packet) {
-                    info!("got a probe! {}", probe);
-                    if probe.get_r_flag() == 1 {
-                        let r_flag = probe.get_mtu2() == 0;
-                        info!(
-                            "flag is set, sending a response with mtu2 of {}, r_flag {} ",
-                            probe.mtu1, r_flag
-                        );
-                        send_probe(
-                            &opt,
-                            Ipv6Packet::new(packet.payload()).unwrap().get_source(),
-                            r_flag,
-                            probe.mtu1, // the received mtu1 will be reflected as mtu2 via this parameter
-                        );
+                if packet.get_source() != interface.mac_address() {
+                    if let Some(probe) = is_hbh_probe(&packet) {
+                        info!("got a probe! {}", probe);
+                        if probe.get_r_flag() == 1 {
+                            let r_flag = probe.get_mtu2() == 0;
+                            info!(
+                                "flag is set, sending a response with mtu2 of {}, r_flag {} ",
+                                probe.mtu1, r_flag
+                            );
+                            send_probe(
+                                &opt,
+                                Ipv6Packet::new(packet.payload()).unwrap().get_source(),
+                                r_flag,
+                                probe.mtu1, // the received mtu1 will be reflected as mtu2 via this parameter
+                            );
+                        }
                     }
                 }
-                //debug!("{:?}", packet);
             }
             Err(e) => {
                 // If an error occurs, we can handle it here
@@ -425,7 +424,6 @@ fn is_hbh_probe(eth: &EthernetPacket) -> Option<HBH> {
         let ipv6: Ipv6Packet = Ipv6Packet::new(eth.payload()).unwrap();
         if ipv6.get_next_header() == IpNextHeaderProtocols::Hopopt {
             let hopopt = &ipv6.payload()[0..=HBH_SIZE - 1];
-            //debug!("hopopt bytes (hex): {:x?}", hopopt);
             return Some(HBH::from(hopopt));
         }
     }
