@@ -30,6 +30,7 @@ use std::net::{IpAddr, Ipv6Addr};
 use simplelog::{Config, LevelFilter, TermLogger};
 
 const HBH_SIZE: usize = 8;
+const HBH_TYPE: u8 = 0b0011_1110;
 
 #[derive(Debug, StructOpt)]
 struct Opt {
@@ -80,7 +81,7 @@ impl HBH {
         HBH {
             next_header: 17,
             eh_length: 0,
-            opt_type: 0b0011_1110,
+            opt_type: HBH_TYPE,
             opt_length: 0b100,
             mtu1: 0,
             mtu2: 0, // contains R flag TODO MSB or LSB?
@@ -424,7 +425,9 @@ fn is_hbh_probe(eth: &EthernetPacket) -> Option<HBH> {
         let ipv6: Ipv6Packet = Ipv6Packet::new(eth.payload()).unwrap();
         if ipv6.get_next_header() == IpNextHeaderProtocols::Hopopt {
             let hopopt = &ipv6.payload()[0..=HBH_SIZE - 1];
-            return Some(HBH::from(hopopt));
+            if hopopt[2] == HBH_TYPE {
+                return Some(HBH::from(hopopt));
+            }
         }
     }
     None
